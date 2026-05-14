@@ -12,11 +12,14 @@ This limitation creates a significant "deployment gap" where database syncing, m
 
 This package provides a high-performance deployment strategy:
 
-1. **Incremental Detection**: The tool uses a local `.deploy_manifest.json` to track file content changes using MD5 hashes.
-2. **Efficient Packaging**: Only new or modified files (detected by hash mismatch) are added to a timestamped `deploy_{timestamp}.zip` archive.
-3. **Atomic Upload**: The single ZIP file is uploaded via FTP (much faster than thousands of small files).
-4. **Remote Extraction**: A temporary PHP helper script is uploaded to extract the ZIP and run a sequence of Artisan commands (migrations, cache clearing, etc.) while the app is in maintenance mode.
-5. **Auto-Cleanup**: Both the ZIP and the helper script are deleted immediately after execution.
+1. **Pre-Deployment Optimization**: The script automatically runs `php artisan optimize:clear` locally to ensure no cached configuration paths are zipped and deployed to the remote server.
+2. **Incremental Detection**: The tool uses a local `.deploy_manifest.json` to track file content changes using MD5 hashes.
+3. **Efficient Packaging**: Only new or modified files (detected by hash mismatch) are added to a timestamped `deploy_{timestamp}.zip` archive.
+4. **Atomic Upload**: The single ZIP file is uploaded via FTP (much faster than thousands of small files).
+5. **Remote Extraction & Permissions**: A temporary PHP helper script is uploaded to extract the ZIP. It then automatically sets `chmod 775` on the remote `storage/` and `bootstrap/cache/` directories to prevent permission errors.
+6. **Cache Purging**: The helper script manually deletes Laravel's `bootstrap/cache` files using native PHP. This prevents fatal "ReflectionException" errors that occur when Artisan tries to boot with a stale cache.
+7. **Post-Extraction Tasks**: While the app is in maintenance mode, it runs a sequence of Artisan commands (migrations, cache clearing, etc.).
+8. **Auto-Cleanup**: Both the ZIP and the helper script are deleted immediately after execution.
 
 ## Installation
 
@@ -89,16 +92,11 @@ vendor/bin/ftp-deploy
 vendor/bin/ftp-deploy db-reset
 ```
 
-**Full Sync** (Ignores the manifest and uploads all files):
+**First-Time / Forced Sync**:
 ```bash
 vendor/bin/ftp-deploy --first-time
 ```
-
-
-To perform a full deployment (ignoring the manifest):
-```bash
-vendor/bin/ftp-deploy --first-time
-```
+> **Note on First-Time Deployments:** Using `--first-time` (or `-f`) aggressively bypasses your standard `deploy.json` exclusion rules. It forces the inclusion of the `vendor` and `storage` directories (ignoring only `.git`, `node_modules`, `tests`, and `.env` files). It follows symlinks and deletes your local `.deploy_manifest.json` to guarantee a 100% fresh hash state. This is highly recommended when deploying to a brand new, empty server.
 
 ### Programmatic Usage
 

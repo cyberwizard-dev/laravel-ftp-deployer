@@ -23,7 +23,7 @@ class RemoteExecutor
             'ftp_pass' => $config['ftp_pass'] ?? '',
             'ftp_port' => (int) ($config['ftp_port'] ?? 21),
             'ftp_root' => rtrim($config['ftp_root'] ?? '', '/'),
-            'app_url' => rtrim($config['app_url'] ?? '', '/'),
+            'app_url'  => rtrim($config['app_url'] ?? '', '/'),
         ];
 
         $this->manifestPath = getcwd() . '/.deploy_manifest.json';
@@ -39,12 +39,12 @@ class RemoteExecutor
                 '_comment' => "Laravel FTP Deployer Configuration. 'exclude' defines files/folders to skip. 'post_extraction_commands' run automatically after a code sync. 'custom_commands' can be triggered manually via CLI.",
                 'exclude' => [
                     'files' => [
-                        '.env', '.env.prod', 'composer.lock', '.gitignore', 
+                        '.env', '.env.prod', 'composer.lock', '.gitignore',
                         'README.md', 'deploy.json', '.deploy_manifest.json'
                     ],
                     'directories' => [
                         '.git', 'node_modules', 'vendor', 'storage/framework/cache',
-                        'storage/framework/sessions', 'storage/framework/views', 
+                        'storage/framework/sessions', 'storage/framework/views',
                         'storage/logs', 'tests'
                     ]
                 ],
@@ -54,7 +54,7 @@ class RemoteExecutor
                 ],
                 'custom_commands' => [
                     'cache-clear' => ['optimize:clear'],
-                    'db-migrate' => ['migrate --force']
+                    'db-migrate'  => ['migrate --force']
                 ]
             ];
             file_put_contents($configFile, json_encode($defaultConfig, JSON_PRETTY_PRINT));
@@ -70,13 +70,13 @@ class RemoteExecutor
             if (!$data) return;
 
             if (isset($data['exclude'])) {
-                $this->exclusions['files'] = $data['exclude']['files'] ?? $this->exclusions['files'];
+                $this->exclusions['files']       = $data['exclude']['files']       ?? $this->exclusions['files'];
                 $this->exclusions['directories'] = $data['exclude']['directories'] ?? $this->exclusions['directories'];
             }
-            
+
             // Support both keys for backward compatibility
             $this->postExtractionCommands = $data['post_extraction_commands'] ?? ($data['remote_commands'] ?? $this->postExtractionCommands);
-            $this->customCommands = $data['custom_commands'] ?? $this->customCommands;
+            $this->customCommands         = $data['custom_commands'] ?? $this->customCommands;
         }
     }
 
@@ -85,45 +85,69 @@ class RemoteExecutor
         return $this->customCommands[$name] ?? null;
     }
 
-    public function runCommands(array $commands): bool
+    // ─── Fix local permissions before zipping ────────────────────────────────
+
+    private function fixLocalPermissions(): void
     {
-        if (!$this->connect()) return false;
+        $cwd = getcwd();
 
-        $helperName = 'artisan_run_' . bin2hex(random_bytes(4)) . '.php';
-        $remoteHelper = ($this->config['ftp_root'] ? $this->config['ftp_root'] . '/' : '') . 'public/' . $helperName;
+        $targets = [
+            $cwd . '/storage',
+            $cwd . '/bootstrap/cache',
+        ];
 
-        $this->log("Uploading temporary command runner...", '34');
-        $helperCode = $this->generateCommandRunnerCode($commands);
-        
-        if (!$this->uploadHelper($remoteHelper, $helperCode)) {
-            $this->close();
-            return false;
+        $this->log("Fixing local permissions before zipping...", '34');
+
+        foreach ($targets as $dir) {
+            if (!is_dir($dir)) continue;
+
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::SELF_FIRST
+            );
+
+            foreach ($iterator as $item) {
+                if ($item->isDir()) {
+                    @chmod($item->getRealPath(), 0775);
+                } else {
+                    @chmod($item->getRealPath(), 0664);
+                }
+            }
+
+            @chmod($dir, 0775); // the root target dir itself
+
+            $label = str_replace($cwd . '/', '', $dir);
+            $this->log("  chmod 775/664 → $label", '36');
         }
 
-        $this->log("Triggering commands via HTTP...", '34');
-        $triggerUrl = $this->config['app_url'] . "/" . $helperName;
-        $response = $this->sendRequest($triggerUrl);
-
-        if ($response === false) {
-            $this->log("ERROR: HTTP request failed.", '31');
-        } else {
-            $this->log("Remote Output:\n$response", '36');
+        // Ensure artisan is executable locally too
+        $artisan = $cwd . '/artisan';
+        if (file_exists($artisan)) {
+            @chmod($artisan, 0755);
+            $this->log("  chmod 755    → artisan", '36');
         }
-
-        $this->log("Cleaning up remote helper...", '34');
-        @ftp_delete($this->ftpConn, $remoteHelper);
-        $this->close();
-
-        return $response !== false;
     }
+
+    // ─── Deploy ──────────────────────────────────────────────────────────────
 
     public function deploy(bool $isFirstTime = false): bool
     {
+        $this->log("Preparing local environment...", '34');
+
+        if (file_exists(getcwd() . '/artisan')) {
+            $this->log("Running locally: php artisan optimize:clear", '36');
+            shell_exec("php artisan optimize:clear 2>&1");
+        }
+
+        // Fix local permissions BEFORE building the ZIP so the correct
+        // mode bits are preserved inside the archive.
+        $this->fixLocalPermissions();
+
         $this->log($isFirstTime ? "Starting FULL deployment..." : "Starting INCREMENTAL deployment...", '34');
 
-        $timestamp = date('Ymd_His');
+        $timestamp   = date('Ymd_His');
         $zipFilename = "deploy_{$timestamp}.zip";
-        $zipFile = getcwd() . '/' . $zipFilename;
+        $zipFile     = getcwd() . '/' . $zipFilename;
         if (file_exists($zipFile)) unlink($zipFile);
 
         $zip = new ZipArchive();
@@ -132,9 +156,9 @@ class RemoteExecutor
             return false;
         }
 
-        $manifest = file_exists($this->manifestPath) ? json_decode(file_get_contents($this->manifestPath), true) : [];
+        $manifest    = file_exists($this->manifestPath) ? json_decode(file_get_contents($this->manifestPath), true) : [];
         $newManifest = $manifest;
-        $count = 0;
+        $count       = 0;
 
         $iterator = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator(getcwd(), RecursiveDirectoryIterator::SKIP_DOTS),
@@ -144,14 +168,14 @@ class RemoteExecutor
         foreach ($iterator as $file) {
             if (!$file->isFile()) continue;
 
-            $filePath = $file->getRealPath();
+            $filePath     = $file->getRealPath();
             $relativePath = str_replace(getcwd() . DIRECTORY_SEPARATOR, '', $filePath);
-            $unixPath = str_replace('\\', '/', $relativePath);
+            $unixPath     = str_replace('\\', '/', $relativePath);
 
-            if ($this->isExcluded($unixPath, false) || basename($unixPath) === $zipFilename) continue;
+            if ($this->isExcluded($unixPath, false, $isFirstTime) || basename($unixPath) === $zipFilename) continue;
 
             $currentHash = md5_file($filePath);
-            $storedHash = $manifest[$unixPath] ?? '';
+            $storedHash  = $manifest[$unixPath] ?? '';
 
             if ($isFirstTime || $currentHash !== $storedHash) {
                 $zip->addFile($filePath, $relativePath);
@@ -172,7 +196,7 @@ class RemoteExecutor
 
         if (!$this->connect()) return false;
 
-        $remoteZip = ($this->config['ftp_root'] ? $this->config['ftp_root'] . '/' : '') . $zipFilename;
+        $remoteZip    = ($this->config['ftp_root'] ? $this->config['ftp_root'] . '/' : '') . $zipFilename;
         $remoteHelper = ($this->config['ftp_root'] ? $this->config['ftp_root'] . '/' : '') . 'public/deploy_extract.php';
 
         $this->log("Uploading $zipFilename...", '34');
@@ -190,15 +214,30 @@ class RemoteExecutor
         }
 
         $this->log("Triggering remote extraction via HTTP...", '34');
-        $triggerUrl = $this->config['app_url'] . "/deploy_extract.php";
-        $response = $this->sendRequest($triggerUrl);
 
-        if ($response === false) {
-            $this->log("ERROR: Remote extraction failed (HTTP request failed).", '31');
-        } else {
-            $this->log("Remote Output:\n$response", '36');
-            file_put_contents($this->manifestPath, json_encode($newManifest, JSON_PRETTY_PRINT));
-            $this->log("Manifest updated locally.", '32');
+        $urlsToTry = [
+            $this->config['app_url'] . "/deploy_extract.php",
+            $this->config['app_url'] . "/public/deploy_extract.php"
+        ];
+
+        $success = false;
+        foreach ($urlsToTry as $triggerUrl) {
+            $this->log("Trying URL: $triggerUrl", '36');
+            $response = $this->sendRequest($triggerUrl);
+
+            if ($response['code'] === 200) {
+                $this->log("Remote Output:\n" . $response['body'], '32');
+                file_put_contents($this->manifestPath, json_encode($newManifest, JSON_PRETTY_PRINT));
+                $this->log("Manifest updated locally.", '32');
+                $success = true;
+                break;
+            } else {
+                $this->log("Failed with HTTP " . $response['code'], '33');
+            }
+        }
+
+        if (!$success) {
+            $this->log("ERROR: Remote extraction failed on all attempted URLs.", '31');
         }
 
         $this->log("Cleaning up remote helper...", '34');
@@ -206,26 +245,100 @@ class RemoteExecutor
         $this->close();
 
         if (file_exists($zipFile)) unlink($zipFile);
-        return $response !== false;
+        return $success;
     }
 
-    private function isExcluded(string $path, bool $isDir): bool
+    // ─── Run custom artisan commands remotely ────────────────────────────────
+
+    public function runCommands(array $commands): bool
     {
+        if (!$this->connect()) return false;
+
+        $helperName   = 'artisan_run_' . bin2hex(random_bytes(4)) . '.php';
+        $remoteHelper = ($this->config['ftp_root'] ? $this->config['ftp_root'] . '/' : '') . 'public/' . $helperName;
+
+        $this->log("Uploading temporary command runner...", '34');
+        $helperCode = $this->generateCommandRunnerCode($commands);
+
+        if (!$this->uploadHelper($remoteHelper, $helperCode)) {
+            $this->close();
+            return false;
+        }
+
+        $this->log("Triggering commands via HTTP...", '34');
+
+        $urlsToTry = [
+            $this->config['app_url'] . "/" . $helperName,
+            $this->config['app_url'] . "/public/" . $helperName
+        ];
+
+        $success = false;
+        foreach ($urlsToTry as $triggerUrl) {
+            $this->log("Trying URL: $triggerUrl", '36');
+            $response = $this->sendRequest($triggerUrl);
+
+            if ($response['code'] === 200) {
+                $this->log("Remote Output:\n" . $response['body'], '36');
+                $success = true;
+                break;
+            } else {
+                $this->log("Failed with HTTP " . $response['code'], '33');
+            }
+        }
+
+        if (!$success) {
+            $this->log("ERROR: HTTP request failed on all attempted URLs.", '31');
+        }
+
+        $this->log("Cleaning up remote helper...", '34');
+        @ftp_delete($this->ftpConn, $remoteHelper);
+        $this->close();
+
+        return $success;
+    }
+
+    // ─── Exclusion logic ─────────────────────────────────────────────────────
+
+    private function isExcluded(string $path, bool $isDir, bool $isFirstTime = false): bool
+    {
+        // Always exclude these regardless of mode
+        if (str_contains($path, '.env') || basename($path) === 'deploy.json' || basename($path) === '.deploy_manifest.json') {
+            return true;
+        }
+
+        if ($isFirstTime) {
+            // Full deployment: only skip truly massive dev-only folders.
+            // vendor/ is intentionally allowed so the server gets all dependencies.
+            if (
+                str_starts_with($path, '.git/')         ||
+                str_starts_with($path, 'node_modules/') ||
+                str_starts_with($path, 'tests/')
+            ) {
+                return true;
+            }
+            return false;
+        }
+
+        // Incremental: apply deploy.json exclusion rules
         foreach ($this->exclusions['directories'] as $dir) {
-            if (str_starts_with($path, $dir . '/') || $path === $dir) return true;
+            $normalizedDir = trim($dir, '/');
+            if (str_starts_with($path, $normalizedDir . '/') || $path === $normalizedDir) {
+                return true;
+            }
         }
         foreach ($this->exclusions['files'] as $file) {
             if (basename($path) === $file || $path === $file) return true;
         }
-        if (str_contains($path, '.env')) return true;
         return false;
     }
+
+    // ─── Remote script generators ────────────────────────────────────────────
 
     private function generateCommandRunnerCode(array $commands): string
     {
         $commandList = "";
         foreach ($commands as $cmd) {
-            $escapedCmd = addslashes($cmd);
+            $escapedCmd   = addslashes($cmd);
             $commandList .= "    echo \"Running: php artisan $escapedCmd\\n\";\n";
             $commandList .= "    echo shell_exec(\"php \$artisan $escapedCmd 2>&1\");\n";
         }
@@ -247,7 +360,7 @@ PHP;
     {
         $commandList = "";
         foreach ($this->postExtractionCommands as $cmd) {
-            $escapedCmd = addslashes($cmd);
+            $escapedCmd   = addslashes($cmd);
             $commandList .= "    echo \"Running: php artisan $escapedCmd\\n\";\n";
             $commandList .= "    echo shell_exec(\"php \$artisan $escapedCmd 2>&1\");\n";
         }
@@ -255,9 +368,11 @@ PHP;
         return <<<PHP
 <?php
 set_time_limit(0);
-\$zipFile = __DIR__ . '/../$zipFilename';
-\$extractTo = __DIR__ . '/../';
-\$artisan = __DIR__ . '/../artisan';
+\$zipFile      = __DIR__ . '/../$zipFilename';
+\$extractTo    = __DIR__ . '/../';
+\$artisan      = __DIR__ . '/../artisan';
+\$storageDir   = __DIR__ . '/../storage';
+\$bootstrapDir = __DIR__ . '/../bootstrap/cache';
 
 if (!file_exists(\$zipFile)) die("Archive '$zipFilename' not found.");
 
@@ -274,7 +389,28 @@ if (\$zip->open(\$zipFile) === TRUE) {
     \$zip->close();
     unlink(\$zipFile);
     echo "Extraction successful.\\n";
-    
+
+    // ── Fix permissions after extraction ──────────────────────────────────
+    echo "Setting permissions on storage/ and bootstrap/cache/...\\n";
+    shell_exec("chmod -R 775 " . escapeshellarg(\$storageDir)   . " 2>&1");
+    shell_exec("chmod -R 775 " . escapeshellarg(\$bootstrapDir) . " 2>&1");
+
+    if (file_exists(\$artisan)) {
+        shell_exec("chmod 755 " . escapeshellarg(\$artisan) . " 2>&1");
+        echo "chmod 755 applied to artisan.\\n";
+    }
+
+    echo "Permissions set.\\n";
+
+    // ── Purge stale bootstrap cache to prevent Artisan crashes ────────────
+    echo "Purging stale bootstrap cache...\\n";
+    \$cacheFiles = ['config.php', 'events.php', 'packages.php', 'routes.php', 'services.php'];
+    foreach (\$cacheFiles as \$cf) {
+        \$cFile = \$bootstrapDir . '/' . \$cf;
+        if (file_exists(\$cFile)) @unlink(\$cFile);
+    }
+
+    // ── Post-extraction artisan commands ──────────────────────────────────
     if (file_exists(\$artisan)) {
         echo "Running post-extraction tasks...\\n";
 $commandList
@@ -287,6 +423,8 @@ $commandList
 }
 PHP;
     }
+
+    // ─── FTP helpers ─────────────────────────────────────────────────────────
 
     private function connect(): bool
     {
@@ -302,13 +440,18 @@ PHP;
 
     private function uploadHelper(string $remotePath, string $content): bool
     {
+        $dir = dirname($remotePath);
+        if ($dir && $dir !== '.') {
+            @ftp_mkdir($this->ftpConn, $dir);
+        }
+
         $temp = tmpfile();
         fwrite($temp, $content);
         fseek($temp, 0);
         return ftp_fput($this->ftpConn, $remotePath, $temp, FTP_BINARY);
     }
 
-    private function sendRequest(string $url)
+    private function sendRequest(string $url): array
     {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
@@ -316,8 +459,13 @@ PHP;
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_TIMEOUT, 600);
-        $res = curl_exec($ch);
-        return $res;
+        $res      = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+        return [
+            'code' => $httpCode,
+            'body' => $res !== false ? $res : curl_error($ch)
+        ];
     }
 
     private function log(string $message, string $color = '37'): void
