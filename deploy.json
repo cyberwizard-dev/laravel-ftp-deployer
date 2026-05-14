@@ -1,0 +1,43 @@
+{
+    "_comment": "Laravel FTP Deployer Configuration. 'exclude' defines files/folders to skip. 'post_extraction_commands' run automatically after a code sync. 'custom_commands' can be triggered manually via CLI.",
+    "exclude": {
+        "files": [
+            ".env",
+            ".env.prod",
+            "composer.lock",
+            ".gitignore",
+            "README.md",
+            "deploy.json",
+            ".deploy_manifest.json"
+        ],
+        "directories": [
+            ".git",
+            "node_modules",
+            "vendor",
+            "storage/framework/cache",
+            "storage/framework/sessions",
+            "storage/framework/views",
+            "storage/logs",
+            "tests"
+        ]
+    },
+    "post_extraction_commands": [
+        "config:clear",
+        "cache:clear",
+        "view:clear",
+        "route:clear",
+        "route:cache",
+        "config:cache",
+        "migrate --force",
+        "db:seed --force",
+        "up"
+    ],
+    "custom_commands": {
+        "cache-clear": [
+            "optimize:clear"
+        ],
+        "db-reset": [
+            "migrate"
+        ]
+    }
+}
