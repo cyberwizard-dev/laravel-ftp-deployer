@@ -143,16 +143,22 @@ if (empty($config['ftp_host']) || empty($config['ftp_user'])) {
 // ─── Argument parsing ─────────────────────────────────────────────────────────
 
 $isFirstTime       = false;
+$dryRun            = false;
 $customCommandName = null;
 
 if (isset($argv[1])) {
-    if (in_array($argv[1], ['--first-time', '-f'], true)) {
-        $isFirstTime = true;
-    } elseif ($isHelp) {
-        displayHelp();
-        exit(0);
-    } else {
-        $customCommandName = $argv[1];
+    $args = array_slice($argv, 1);
+    foreach ($args as $arg) {
+        if (in_array($arg, ['--first-time', '-f'], true)) {
+            $isFirstTime = true;
+        } elseif (in_array($arg, ['--dry-run'], true)) {
+            $dryRun = true;
+        } elseif (in_array($arg, ['--help', '-h', 'help'], true)) {
+            displayHelp();
+            exit(0);
+        } elseif (!$customCommandName && str_starts_with($arg, '-') === false) {
+            $customCommandName = $arg;
+        }
     }
 }
 
@@ -165,7 +171,8 @@ function displayHelp(): void
     echo "  vendor/bin/ftp-deploy [command|option]\n\n";
     echo "Options:\n";
     echo "  -h, --help, help    Display this help message\n";
-    echo "  -f, --first-time    Perform a full deployment (ignores manifest, includes vendor/)\n\n";
+    echo "  -f, --first-time    Perform a full deployment (ignores manifest, includes vendor/)\n";
+    echo "  --dry-run           Show what would be deployed and executed without connecting to the remote server\n\n";
 
     try {
         $env      = loadEnv(file_exists('.env.prod') ? '.env.prod' : '.env');
@@ -189,6 +196,7 @@ function displayHelp(): void
     echo "Examples:\n";
     echo "  vendor/bin/ftp-deploy                # Incremental deploy\n";
     echo "  vendor/bin/ftp-deploy --first-time   # Full deploy (includes vendor/)\n";
+    echo "  vendor/bin/ftp-deploy --dry-run      # Preview deployment without applying\n";
     echo "  vendor/bin/ftp-deploy db-reset       # Run custom command set\n";
 }
 
@@ -203,9 +211,9 @@ try {
             logColor("ERROR: Custom command '{$customCommandName}' not found in deploy.json", '31');
             exit(1);
         }
-        $success = $executor->runCommands($commands);
+        $success = $executor->execute($commands, $dryRun);
     } else {
-        $success = $executor->deploy($isFirstTime);
+        $success = $executor->deploy($isFirstTime, $dryRun);
     }
 
     if ($success) {
