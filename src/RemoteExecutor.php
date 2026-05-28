@@ -233,6 +233,12 @@ class RemoteExecutor
             $this->config['app_url'] . "/public/" . $helperName
         ];
 
+        if (str_starts_with($this->config['app_url'], 'https://')) {
+            $httpUrl = str_replace('https://', 'http://', $this->config['app_url']);
+            $urlsToTry[] = $httpUrl . "/" . $helperName;
+            $urlsToTry[] = $httpUrl . "/public/" . $helperName;
+        }
+
         $success = false;
         foreach ($urlsToTry as $triggerUrl) {
             $this->log("Trying URL: $triggerUrl", '36');
@@ -254,7 +260,7 @@ class RemoteExecutor
                     $this->log("Raw output: " . $response['body'], '33');
                 }
             } else {
-                $this->log("Failed with HTTP " . $response['code'], '33');
+                $this->log("Failed with HTTP " . $response['code'] . " - Error: " . $response['body'], '33');
             }
         }
 
@@ -299,6 +305,12 @@ class RemoteExecutor
             $this->config['app_url'] . "/" . $helperName,
             $this->config['app_url'] . "/public/" . $helperName
         ];
+
+        if (str_starts_with($this->config['app_url'], 'https://')) {
+            $httpUrl = str_replace('https://', 'http://', $this->config['app_url']);
+            $urlsToTry[] = $httpUrl . "/" . $helperName;
+            $urlsToTry[] = $httpUrl . "/public/" . $helperName;
+        }
 
         $success = false;
         foreach ($urlsToTry as $triggerUrl) {
@@ -557,14 +569,48 @@ PHP;
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
         curl_setopt($ch, CURLOPT_TIMEOUT, 600);
+        curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            "Authorization: Bearer $token",
             "Accept: application/json"
         ]);
         
         $res      = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+        // Fallback to file_get_contents if curl fails entirely
+        if ($httpCode === 0) {
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'GET',
+                    'header' => "Accept: application/json\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n",
+                    'timeout' => 600,
+                    'ignore_errors' => true,
+                ],
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false,
+                ]
+            ]);
+            $fgcRes = @file_get_contents($url, false, $context);
+            if ($fgcRes !== false) {
+                // Try to parse headers to get status code
+                $httpCode = 200;
+                $headers = function_exists('http_get_last_response_headers') 
+                    ? http_get_last_response_headers() 
+                    : (isset($http_response_header) ? $http_response_header : []);
+                    
+                if ($headers && count($headers) > 0) {
+                    preg_match('#HTTP/\d+\.\d+ (\d+)#', $headers[0], $matches);
+                    if (isset($matches[1])) {
+                        $httpCode = (int)$matches[1];
+                    }
+                }
+                $res = $fgcRes;
+            }
+        }
 
         return [
             'code' => $httpCode,
