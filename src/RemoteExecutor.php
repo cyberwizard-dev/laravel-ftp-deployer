@@ -598,9 +598,13 @@ PHP;
             if ($fgcRes !== false) {
                 // Try to parse headers to get status code
                 $httpCode = 200;
-                $headers = function_exists('http_get_last_response_headers') 
-                    ? http_get_last_response_headers() 
-                    : (isset($http_response_header) ? $http_response_header : []);
+                $headers = [];
+                if (function_exists('http_get_last_response_headers')) {
+                    $headers = http_get_last_response_headers();
+                } else {
+                    $var = 'http_response_header';
+                    $headers = @$$var ?: [];
+                }
                     
                 if ($headers && count($headers) > 0) {
                     preg_match('#HTTP/\d+\.\d+ (\d+)#', $headers[0], $matches);
@@ -629,6 +633,69 @@ PHP;
             @ftp_close($this->ftpConn);
             $this->ftpConn = null;
         }
+    }
+
+    public function updateRemoteEnv(array $variables): bool
+    {
+        if (!$this->connect()) return false;
+        
+        $remoteEnvPath = ($this->config['ftp_root'] ? $this->config['ftp_root'] . '/' : '') . '.env';
+        $tempFile = tempnam(sys_get_temp_dir(), 'env_');
+        
+        $this->log("Downloading remote .env...", '34');
+        if (!@ftp_get($this->ftpConn, $tempFile, $remoteEnvPath, FTP_BINARY)) {
+            $this->log("Remote .env not found or inaccessible. We will create a new one.", '33');
+            file_put_contents($tempFile, "");
+        } else {
+            $backupPath = $remoteEnvPath . '_' . date('Ymd_His') . '.bak';
+            $this->log("Backing up remote .env to {$backupPath}...", '34');
+            @ftp_put($this->ftpConn, $backupPath, $tempFile, FTP_BINARY);
+        }
+        
+        $contents = file_get_contents($tempFile);
+        // Normalize line endings
+        $contents = str_replace("\r\n", "\n", $contents);
+        $lines = explode("\n", $contents);
+        
+        foreach ($variables as $key => $value) {
+            $key = trim($key);
+            if (empty($key)) continue;
+
+            $found = false;
+            foreach ($lines as &$line) {
+                $trimmed = trim($line);
+                // Handle cases where there might be spaces before or after the =
+                if (str_starts_with($trimmed, $key . '=') || preg_match("/^" . preg_quote($key, '/') . "\s*=/", $trimmed)) {
+                    $line = $key . '=' . (str_contains($value, ' ') ? '"' . $value . '"' : $value);
+                    $found = true;
+                    break;
+                }
+            }
+            
+            if (!$found) {
+                if (count($lines) > 0 && trim(end($lines)) !== '') {
+                    $lines[] = "";
+                }
+                $lines[] = $key . '=' . (str_contains($value, ' ') ? '"' . $value . '"' : $value);
+            }
+        }
+        
+        file_put_contents($tempFile, implode("\n", $lines));
+        
+        $this->log("Uploading updated .env...", '34');
+        $success = @ftp_put($this->ftpConn, $remoteEnvPath, $tempFile, FTP_BINARY);
+        
+        if ($success) {
+            $updatedKeys = implode(', ', array_keys($variables));
+            $this->log("Successfully updated: {$updatedKeys} in remote .env.", '32');
+        } else {
+            $this->log("ERROR: Failed to upload updated .env.", '31');
+        }
+        
+        @unlink($tempFile);
+        $this->close();
+        
+        return $success;
     }
 
     public function getPostExtractionCommands(): array { return $this->postExtractionCommands; }

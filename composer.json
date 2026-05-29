@@ -1,7 +1,7 @@
 {
     "name": "cyberwizard/laravel-ftp-deployer",
     "description": "Run Laravel Artisan commands on remote servers via FTP and HTTP triggers (useful for hosting without SSH).",
-    "version": "1.1.1",
+    "version": "1.2.0",
     "type": "library",
     "license": "MIT",
     "authors": [
@@ -26,6 +26,7 @@
         }
     },
     "bin": [
-        "bin/ftp-deploy"
+        "bin/ftp-deploy",
+        "bin/update-env"
     ]
 }

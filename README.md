@@ -98,6 +98,13 @@ vendor/bin/ftp-deploy --first-time
 ```
 > **Note on First-Time Deployments:** Using `--first-time` (or `-f`) aggressively bypasses your standard `deploy.json` exclusion rules. It forces the inclusion of the `vendor` and `storage` directories (ignoring only `.git`, `node_modules`, `tests`, and `.env` files). It follows symlinks and deletes your local `.deploy_manifest.json` to guarantee a 100% fresh hash state. This is highly recommended when deploying to a brand new, empty server.
 
+**Manage Environment Variables Interactively**:
+To quickly add or update keys in your **remote** `.env` file, you can use the included `update-env` utility. It connects via FTP, modifies the remote file, and uploads it securely:
+```bash
+./bin/update-env
+```
+It will prompt you for the variable name and value, and update or append it automatically on your remote server.
+
 ### Programmatic Usage
 
 ```php
